@@ -6,6 +6,7 @@ import java.io.IOException
 object Main extends zio.App {
   override def run(args: List[String]): URIO[ZEnv, ExitCode] = program.exitCode
 
+
   val program: ZIO[Console, Throwable, Unit] = for {
     _                <- putStrLn("Welcome to ScalaJobs.com Scraper")
     _                <- putStrLn("Choose one of the following options")
