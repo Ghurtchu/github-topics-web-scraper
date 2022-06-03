@@ -11,13 +11,14 @@ import scala.concurrent.Future
 
 object Scraper {
 
-  val url: String = "https://github.com/topics/"
+  val baseUrl = "https://github.com"
+  val topicsUrl: String = baseUrl concat "/topics/"
   val paragraphTag = "p"
   val href = "href"
   val descriptionClassName = "f5 color-fg-muted mb-0 mt-1"
   val paragraphTitleClassName = "f3 lh-condensed mb-0 mt-1 Link--primary"
 
-  def filterParagraphs(paragraphs: List[Element])(f: Element => Boolean): Task[List[Element]] = Task.effect(paragraphs.filter(f))
+  def filterElements(paragraphs: List[Element])(f: Element => Boolean): Task[List[Element]] = Task.effect(paragraphs.filter(f))
 
   def mapParagraphs[A](paragraphs: List[Element])(f: Element => A): Task[List[A]] = Task.effect(paragraphs.map(f))
 
@@ -40,25 +41,42 @@ object Scraper {
   }
 
   def scrape(): ZIO[Console, Throwable, Unit] = for {
-    doc             <- fetchDocByURL(url)
+    doc             <- fetchDocByURL(topicsUrl)
     body            <- extractBody(doc)
     allParagraphs   <- selectAllParagraphs(body)
-    titleParagraphs <- filterParagraphs(allParagraphs)(_.hasClass(paragraphTitleClassName))
+    titleParagraphs <- filterElements(allParagraphs)(_.hasClass(paragraphTitleClassName))
     titles          <- parseToTitles(titleParagraphs)
     hyperlinks      <- parseToHyperLinks(body)
-    descriptions    <- filterParagraphs(allParagraphs)(_.hasClass(descriptionClassName)).flatMap(mapParagraphs(_)(_.text()))
-    urls            <- extractUrls(hyperlinks)(url)
-    data            <- combine(titles, descriptions, urls)
-    _               <- putStrLn(s"data = $data")
-    csv          <- ZIO.effect {
+    descriptions    <- filterElements(allParagraphs)(_.hasClass(descriptionClassName)).flatMap(mapParagraphs(_)(_.text()))
+    urls            <- extractUrls(hyperlinks)(baseUrl)
+    topicDocuments  <- ZIO.foreachPar(urls)(url => ZIO.effect(Jsoup.connect(url).get()))
+    namePairList    <- parseToUserNameAndProjectTitle(topicDocuments)
+    partialData     <- combine(titles, descriptions, urls)
+    fullData        =  partialData.zip(namePairList).map(_ concat _)
+    _               <- putStrLn(s"full data = $fullData")
+    _               <- putStrLn(s"full data length = ${partialData.length}")
+    csv             <- ZIO.effect {
                       val file = new java.io.File("data.csv")
                       val writer = CSVWriter.open(file)
-                      writer.writeRow(Seq("title", "description", "url"))
-                      writer.writeAll(data)
+                      writer.writeRow(Seq("title", "description", "url", "user_name", "project_title", "stars"))
+                      writer.writeAll(fullData)
                     }
   } yield ()
 
-  private def parseToTitles(paragraphs: List[Element]): Task[List[String]] = Task.effect(paragraphs.map(_.text()))
+
+  private def parseToUserNameAndProjectTitle(topicDocuments: List[Document]): Task[List[List[String]]] = Task.effect {
+    topicDocuments.map(_.body)
+      .map(_.select("h3"))
+      .filter(_.hasClass("f3 color-fg-muted text-normal lh-condensed"))
+      .map(_.select("a"))
+      .map { tag =>
+        val namePair = tag.text.split(" ")
+
+        List(namePair(0), namePair(1))
+      }
+  }
+
+  private def parseToTitles(paragraphs: List[Element]): Task[List[String]] = Task.effect(paragraphs.map(_.text))
 
   private def parseToHyperLinks(body: Element): Task[List[Element]] = Task.effect {
     val linkTag = "a"
